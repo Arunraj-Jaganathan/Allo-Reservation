@@ -15,28 +15,32 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const idem = req.headers.get("idempotency-key")?.trim() || null;
     const requestHash = sha256Hex(stableStringify({ reservationId: id }));
 
-    const res = await prisma.$transaction(async (tx) => {
-      const route = routeFor(id);
-      if (idem) {
-        const cached = await readOrBeginIdempotency(tx, idem, route, requestHash);
-        if (cached.hit) {
-          return { httpStatus: cached.statusCode, body: cached.body };
+    const res = await prisma.$transaction(
+      async (tx) => {
+        const route = routeFor(id);
+
+        if (idem) {
+          const cached = await readOrBeginIdempotency(tx, idem, route, requestHash);
+          if (cached.hit) {
+            return { httpStatus: cached.statusCode, body: cached.body };
+          }
         }
-      }
 
-      const outcome = await releaseReservation(tx, id);
-      const httpStatus = 200;
-      const body: Record<string, unknown> = {
-        reservation: reservationPublic(outcome.reservation),
-        outcome: outcome.kind,
-      };
+        const outcome = await releaseReservation(tx, id);
+        const httpStatus = 200;
+        const body: Record<string, unknown> = {
+          reservation: reservationPublic(outcome.reservation),
+          outcome: outcome.kind,
+        };
 
-      if (idem) {
-        await writeIdempotency(tx, idem, route, requestHash, httpStatus, body);
-      }
+        if (idem) {
+          await writeIdempotency(tx, idem, route, requestHash, httpStatus, body);
+        }
 
-      return { httpStatus, body };
-    });
+        return { httpStatus, body };
+      },
+      { timeout: 15000 }
+    );
 
     return NextResponse.json(res.body, { status: res.httpStatus });
   } catch (e) {

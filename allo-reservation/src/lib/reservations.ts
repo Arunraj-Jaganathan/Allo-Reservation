@@ -96,16 +96,27 @@ export async function confirmReservation(tx: DbTx, reservationId: string) {
   const r = await tx.reservation.findUnique({ where: { id: reservationId } });
   if (!r) throw new NotFoundError("Reservation");
 
-  if (r.status !== ReservationStatus.PENDING) {
-    return { kind: "already_terminal", reservation: r };
+  // Already in a terminal state — return the correct kind for each
+  if (r.status === ReservationStatus.CONFIRMED) {
+    return { kind: "already_confirmed" as const, reservation: r };
   }
 
+  if (r.status === ReservationStatus.EXPIRED) {
+    return { kind: "already_expired" as const, reservation: r };
+  }
+
+  if (r.status === ReservationStatus.RELEASED) {
+    return { kind: "released" as const, reservation: r };
+  }
+
+  // Still PENDING — check expiry
   const nowTime = now();
 
   if (r.expiresAt <= nowTime) {
-    return await expire(tx, r);
+    return await expireNow(tx, r);
   }
 
+  // Happy path: confirm it — decrement reservedUnits AND totalUnits
   await tx.inventory.update({
     where: {
       productId_warehouseId: {
@@ -120,7 +131,7 @@ export async function confirmReservation(tx: DbTx, reservationId: string) {
   });
 
   return {
-    kind: "confirmed",
+    kind: "confirmed" as const,
     reservation: await tx.reservation.update({
       where: { id: r.id },
       data: { status: ReservationStatus.CONFIRMED },
@@ -132,11 +143,19 @@ export async function confirmReservation(tx: DbTx, reservationId: string) {
    RELEASE RESERVATION
 ========================= */
 export async function releaseReservation(tx: DbTx, reservationId: string) {
+  // Added FOR UPDATE lock to match confirmReservation safety
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id"
+    FROM "Reservation"
+    WHERE "id" = ${reservationId}
+    FOR UPDATE
+  `);
+
   const r = await tx.reservation.findUnique({ where: { id: reservationId } });
   if (!r) throw new NotFoundError("Reservation");
 
   if (r.status !== ReservationStatus.PENDING) {
-    return { kind: "noop", reservation: r };
+    return { kind: "noop" as const, reservation: r };
   }
 
   await tx.inventory.update({
@@ -150,7 +169,7 @@ export async function releaseReservation(tx: DbTx, reservationId: string) {
   });
 
   return {
-    kind: "released",
+    kind: "released" as const,
     reservation: await tx.reservation.update({
       where: { id: r.id },
       data: { status: ReservationStatus.RELEASED },
@@ -159,9 +178,9 @@ export async function releaseReservation(tx: DbTx, reservationId: string) {
 }
 
 /* =========================
-   EXPIRE FUNCTION
+   EXPIRE FUNCTION (internal)
 ========================= */
-async function expire(tx: DbTx, r: Reservation) {
+async function expireNow(tx: DbTx, r: Reservation) {
   await tx.inventory.update({
     where: {
       productId_warehouseId: {
@@ -173,7 +192,7 @@ async function expire(tx: DbTx, r: Reservation) {
   });
 
   return {
-    kind: "expired",
+    kind: "expired_now" as const,
     reservation: await tx.reservation.update({
       where: { id: r.id },
       data: { status: ReservationStatus.EXPIRED },
@@ -198,7 +217,7 @@ export async function releaseExpiredReservationsBatch(limit = 100) {
       const fresh = await tx.reservation.findUnique({ where: { id: r.id } });
       if (!fresh || fresh.status !== ReservationStatus.PENDING) return;
       if (fresh.expiresAt > now()) return;
-      await expire(tx, fresh);
+      await expireNow(tx, fresh);
     });
   }
 

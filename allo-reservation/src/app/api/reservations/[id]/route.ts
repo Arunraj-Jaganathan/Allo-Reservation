@@ -9,7 +9,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     await releaseExpiredReservationsBatch(25);
     const r = await prisma.reservation.findUnique({
       where: { id },
-      include: { product: { select: { sku: true, name: true } }, warehouse: { select: { code: true, name: true } } },
+      include: {
+        product: { select: { sku: true, name: true } },
+        warehouse: { select: { code: true, name: true } },
+      },
     });
     if (!r) {
       return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
