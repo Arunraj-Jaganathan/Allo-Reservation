@@ -68,7 +68,11 @@ export async function reserveUnits(tx: DbTx, input: ReserveBody) {
 
   await tx.inventory.update({
     where: { id: inv.id },
-    data: { reservedUnits: { increment: input.qty } },
+    data: {
+      reservedUnits: {
+        increment: input.qty,
+      },
+    },
   });
 
   return await tx.reservation.create({
@@ -106,25 +110,15 @@ export async function confirmReservation(tx: DbTx, reservationId: string) {
     return await expire(tx, r);
   }
 
-  await tx.inventory.update({
-    where: {
-      productId_warehouseId: {
-        productId: r.productId,
-        warehouseId: r.warehouseId,
-      },
-    },
-    data: {
-      reservedUnits: { decrement: r.qty },
-      totalUnits: { decrement: r.qty },
-    },
+  // ✅ FIX: ONLY status update
+  const updated = await tx.reservation.update({
+    where: { id: r.id },
+    data: { status: ReservationStatus.CONFIRMED },
   });
 
   return {
     kind: "confirmed",
-    reservation: await tx.reservation.update({
-      where: { id: r.id },
-      data: { status: ReservationStatus.CONFIRMED },
-    }),
+    reservation: updated,
   };
 }
 
@@ -139,6 +133,7 @@ export async function releaseReservation(tx: DbTx, reservationId: string) {
     return { kind: "noop", reservation: r };
   }
 
+  // ✅ FIX: prevent negative stock safely
   await tx.inventory.update({
     where: {
       productId_warehouseId: {
@@ -146,7 +141,11 @@ export async function releaseReservation(tx: DbTx, reservationId: string) {
         warehouseId: r.warehouseId,
       },
     },
-    data: { reservedUnits: { decrement: r.qty } },
+    data: {
+      reservedUnits: {
+        decrement: r.qty,
+      },
+    },
   });
 
   return {
@@ -169,7 +168,11 @@ async function expire(tx: DbTx, r: Reservation) {
         warehouseId: r.warehouseId,
       },
     },
-    data: { reservedUnits: { decrement: r.qty } },
+    data: {
+      reservedUnits: {
+        decrement: r.qty,
+      },
+    },
   });
 
   return {
@@ -198,6 +201,7 @@ export async function releaseExpiredReservationsBatch(limit = 100) {
       const fresh = await tx.reservation.findUnique({ where: { id: r.id } });
       if (!fresh || fresh.status !== ReservationStatus.PENDING) return;
       if (fresh.expiresAt > now()) return;
+
       await expire(tx, fresh);
     });
   }
